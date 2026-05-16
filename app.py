@@ -93,7 +93,7 @@ def make_deposit_message(item):
     holder = get_setting("account_holder", "조영민")
     bank = get_setting("bank_name", "우리은행")
     account = get_setting("account_number", "1005-104-856764")
-    amount = f"{int(item.get('wholesale') or 0):,}"
+    amount = f"{int(item.get('retail') or 0):,}"
 
     text = template
     import re
@@ -152,8 +152,13 @@ function copyText(id) {
     <div class="row">도매가: {{ "{:,}".format(r.wholesale or 0) }}원</div>
     <div class="row">소매가: {{ "{:,}".format(r.retail or 0) }}원</div>
 
-    <textarea id="deposit{{ r.id }}" class="copybox" readonly>{{ r.deposit_message }}</textarea>
-    <button onclick="copyText('deposit{{ r.id }}')">입금요청 복사</button>
+    <div class="row">등록일: {{ r.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
+
+    <textarea id="deposit{{ r.id }}" style="display:none;">{{ r.deposit_message }}</textarea>
+
+    <button onclick="copyText('deposit{{ r.id }}')">
+    입금요청 복사
+    </button>
 </div>
 {% endfor %}
 
