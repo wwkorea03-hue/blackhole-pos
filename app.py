@@ -1,6 +1,7 @@
 import os
+import re
 import pymysql
-from flask import Flask, request, render_template_string, redirect, url_for
+from flask import Flask, request, render_template_string, redirect
 
 app = Flask(__name__)
 
@@ -88,20 +89,26 @@ def set_setting(key, value):
     conn.close()
 
 
-def make_deposit_message(item):
+def make_deposit_message_from_amount(amount, selected_lines=None):
     template = get_setting("deposit_message", DEFAULT_DEPOSIT_MESSAGE)
     holder = get_setting("account_holder", "조영민")
     bank = get_setting("bank_name", "우리은행")
     account = get_setting("account_number", "1005-104-856764")
-    amount = f"{int(item.get('retail') or 0):,}"
 
     text = template
-    import re
-    text = re.sub(r"입금금액\s*:\s*.*", f"입금금액 : {amount}", text)
+    text = re.sub(r"입금금액\s*:\s*.*", f"입금금액 : {int(amount):,}", text)
     text = re.sub(r"예금주\s*:\s*.*", f"예금주 : {holder}", text)
     text = re.sub(r"은행명\s*:\s*.*", f"은행명 : {bank}", text)
     text = re.sub(r"계좌번호\s*:\s*.*", f"계좌번호 : {account}", text)
+
+    if selected_lines:
+        text = "\n".join(selected_lines) + "\n\n" + text
+
     return text
+
+
+def make_deposit_message(item):
+    return make_deposit_message_from_amount(item.get("retail") or 0)
 
 
 HTML = """
@@ -117,20 +124,130 @@ h2 { margin-top:0; }
 .search { display:flex; gap:6px; margin-bottom:12px; }
 input, textarea { width:100%; box-sizing:border-box; padding:10px; font-size:16px; }
 button, .btn { padding:10px; font-size:15px; border:0; border-radius:8px; background:#222; color:white; text-decoration:none; display:inline-block; }
-.card { background:white; padding:14px; border-radius:12px; margin-bottom:10px; box-shadow:0 1px 4px #ccc; }
+.card { position:relative; background:white; padding:14px; border-radius:12px; margin-bottom:10px; box-shadow:0 1px 4px #ccc; }
 .code { font-size:21px; font-weight:bold; margin-bottom:5px; }
 .row { margin:4px 0; }
-.copybox { width:100%; height:145px; margin-top:8px; }
 .admin-link { display:block; margin:10px 0; color:#333; }
+.check-area { position:absolute; right:12px; top:12px; font-size:14px; }
+.selected-box { background:#fff; border-radius:12px; padding:12px; margin:10px 0; box-shadow:0 1px 4px #ccc; }
+.selected-row { display:flex; justify-content:space-between; border-bottom:1px solid #eee; padding:5px 0; font-size:14px; }
+.small { color:#666; font-size:13px; }
 </style>
+
 <script>
-function copyText(id) {
-    const el = document.getElementById(id);
-    el.select();
-    el.setSelectionRange(0, 999999);
-    navigator.clipboard.writeText(el.value);
-    alert("복사되었습니다.");
+function money(n) {
+    return Number(n || 0).toLocaleString();
 }
+
+function getSelected() {
+    try {
+        return JSON.parse(localStorage.getItem("selectedItems") || "[]");
+    } catch(e) {
+        return [];
+    }
+}
+
+function setSelected(items) {
+    localStorage.setItem("selectedItems", JSON.stringify(items));
+}
+
+function renderSelected() {
+    const box = document.getElementById("selectedList");
+    const wrap = document.getElementById("selectedWrap");
+    const items = getSelected();
+
+    if (!items.length) {
+        wrap.style.display = "none";
+        box.innerHTML = "";
+        return;
+    }
+
+    wrap.style.display = "block";
+    let html = "";
+    let total = 0;
+
+    items.forEach((it, idx) => {
+        total += Number(it.retail || 0);
+        html += `
+            <div class="selected-row">
+                <span>${it.code} ${money(it.retail)}</span>
+                <button type="button" onclick="removeSelected(${idx})" style="padding:4px 7px;font-size:12px;background:#a00;">삭제</button>
+            </div>
+        `;
+    });
+
+    html += `<div class="selected-row"><b>합계</b><b>${money(total)}</b></div>`;
+    box.innerHTML = html;
+}
+
+function removeSelected(idx) {
+    const items = getSelected();
+    items.splice(idx, 1);
+    setSelected(items);
+    renderSelected();
+    syncChecks();
+}
+
+function clearSelected() {
+    setSelected([]);
+    renderSelected();
+    syncChecks();
+}
+
+function toggleSelect(id, code, retail) {
+    let items = getSelected();
+    const exists = items.findIndex(x => String(x.id) === String(id));
+
+    if (exists >= 0) {
+        items.splice(exists, 1);
+    } else {
+        items.push({id:id, code:code, retail:Number(retail || 0)});
+    }
+
+    setSelected(items);
+    renderSelected();
+    syncChecks();
+}
+
+function syncChecks() {
+    const items = getSelected();
+    document.querySelectorAll(".item-check").forEach(chk => {
+        chk.checked = items.some(x => String(x.id) === String(chk.dataset.id));
+    });
+}
+
+function copyText(text) {
+    navigator.clipboard.writeText(text).then(() => {
+        alert("복사되었습니다.");
+    });
+}
+
+function copySingle(id) {
+    const text = document.getElementById("deposit" + id).value;
+    copyText(text);
+}
+
+function copyBundle() {
+    const items = getSelected();
+    if (!items.length) {
+        alert("선택된 상품이 없습니다.");
+        return;
+    }
+
+    const lines = items.map(it => `${it.code} ${money(it.retail)}`);
+    const total = items.reduce((sum, it) => sum + Number(it.retail || 0), 0);
+
+    let template = document.getElementById("bundleTemplate").value;
+    template = template.replace(/입금금액\\s*:\\s*.*/g, "입금금액 : " + money(total));
+
+    const finalText = lines.join("\\n") + "\\n\\n" + template;
+    copyText(finalText);
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    renderSelected();
+    syncChecks();
+});
 </script>
 </head>
 <body>
@@ -143,22 +260,37 @@ function copyText(id) {
     <button>검색</button>
 </form>
 
+<div id="selectedWrap" class="selected-box" style="display:none;">
+    <b>선택 상품</b>
+    <div id="selectedList"></div>
+    <button type="button" onclick="copyBundle()" style="margin-top:8px;">묶음 입금요청 복사</button>
+    <button type="button" onclick="clearSelected()" style="margin-top:8px;background:#777;">선택 초기화</button>
+</div>
+
+<textarea id="bundleTemplate" style="display:none;">{{ bundle_template }}</textarea>
+
 {% for r in rows %}
 <div class="card">
+    <label class="check-area">
+        <input
+            type="checkbox"
+            class="item-check"
+            data-id="{{ r.id }}"
+            onchange="toggleSelect('{{ r.id }}', '{{ r.brand_code }} {{ r.serial }}', '{{ r.retail or 0 }}')"
+        >
+        선택
+    </label>
+
     <div class="code">{{ r.brand_code }} {{ r.serial }}</div>
     <div class="row">브랜드: {{ r.brand_name }}</div>
     <div class="row">거래처: {{ r.client }}</div>
     <div class="row">구분: {{ r.division or "" }}</div>
     <div class="row">도매가: {{ "{:,}".format(r.wholesale or 0) }}원</div>
     <div class="row">소매가: {{ "{:,}".format(r.retail or 0) }}원</div>
-
-    <div class="row">등록일: {{ r.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
+    <div class="row small">등록일: {{ r.created_at }}</div>
 
     <textarea id="deposit{{ r.id }}" style="display:none;">{{ r.deposit_message }}</textarea>
-
-    <button onclick="copyText('deposit{{ r.id }}')">
-    입금요청 복사
-    </button>
+    <button onclick="copySingle('{{ r.id }}')">입금요청 복사</button>
 </div>
 {% endfor %}
 
@@ -252,7 +384,14 @@ def home():
     for r in rows:
         r["deposit_message"] = make_deposit_message(r)
 
-    return render_template_string(HTML, rows=rows, q=q)
+    bundle_template = make_deposit_message_from_amount(0)
+
+    return render_template_string(
+        HTML,
+        rows=rows,
+        q=q,
+        bundle_template=bundle_template
+    )
 
 
 @app.route("/admin", methods=["GET", "POST"])
