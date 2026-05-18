@@ -45,8 +45,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS items (
             id INT AUTO_INCREMENT PRIMARY KEY,
             brand_name VARCHAR(255),
-            brand_code VARCHAR(20),
-            serial VARCHAR(20),
+            brand_code VARCHAR(50),
+            serial VARCHAR(50),
             client VARCHAR(255),
             division VARCHAR(255),
             wholesale INT,
@@ -56,6 +56,22 @@ def init_db():
             retail INT,
             post_result MEDIUMTEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS pos_search_cache (
+            item_id INT PRIMARY KEY,
+            code_text VARCHAR(120),
+            brand_name VARCHAR(255),
+            brand_code VARCHAR(50),
+            serial VARCHAR(50),
+            client VARCHAR(255),
+            division VARCHAR(255),
+            wholesale INT,
+            retail INT,
+            created_at DATETIME,
+            search_text TEXT
         )
         """)
 
@@ -89,6 +105,13 @@ def set_setting(key, value):
     conn.close()
 
 
+def normalize_search(value):
+    text = str(value or "").lower()
+    for x in [" ", "-", "_", "/", "."]:
+        text = text.replace(x, "")
+    return text
+
+
 def make_deposit_message_from_amount(amount, selected_lines=None):
     template = get_setting("deposit_message", DEFAULT_DEPOSIT_MESSAGE)
     holder = get_setting("account_holder", "조영민")
@@ -109,6 +132,18 @@ def make_deposit_message_from_amount(amount, selected_lines=None):
 
 def make_deposit_message(item):
     return make_deposit_message_from_amount(item.get("retail") or 0)
+
+
+def get_cache_count():
+    try:
+        conn = db()
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM pos_search_cache")
+            row = cur.fetchone()
+        conn.close()
+        return int(row["cnt"] or 0)
+    except Exception:
+        return 0
 
 
 HTML = """
@@ -132,6 +167,7 @@ button, .btn { padding:10px; font-size:15px; border:0; border-radius:8px; backgr
 .selected-box { background:#fff; border-radius:12px; padding:12px; margin:10px 0; box-shadow:0 1px 4px #ccc; }
 .selected-row { display:flex; justify-content:space-between; border-bottom:1px solid #eee; padding:5px 0; font-size:14px; }
 .small { color:#666; font-size:13px; }
+.notice { font-size:13px; color:#777; margin:6px 0 10px; }
 </style>
 
 <script>
@@ -260,6 +296,10 @@ document.addEventListener("DOMContentLoaded", () => {
     <button>검색</button>
 </form>
 
+<div class="notice">
+검색 캐시: {{ cache_count }}건 / 검색결과: {{ rows|length }}건
+</div>
+
 <div id="selectedWrap" class="selected-box" style="display:none;">
     <b>선택 상품</b>
     <div id="selectedList"></div>
@@ -359,25 +399,75 @@ textarea { height:210px; }
 @app.route("/")
 def home():
     q = request.args.get("q", "").strip()
+    cache_count = get_cache_count()
 
     conn = db()
     with conn.cursor() as cur:
-        if q:
-            cur.execute("""
-            SELECT *
-            FROM items
-            WHERE brand_name LIKE %s
-               OR brand_code LIKE %s
-               OR serial LIKE %s
-               OR client LIKE %s
-               OR division LIKE %s
-            ORDER BY id DESC
-            LIMIT 100
-            """, (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"))
-        else:
-            cur.execute("SELECT * FROM items ORDER BY id DESC LIMIT 100")
+        if cache_count > 0:
+            if q:
+                compact_q = normalize_search(q)
+                cur.execute("""
+                SELECT
+                    item_id AS id,
+                    brand_name,
+                    brand_code,
+                    serial,
+                    client,
+                    division,
+                    wholesale,
+                    retail,
+                    created_at
+                FROM pos_search_cache
+                WHERE search_text LIKE %s
+                   OR search_text LIKE %s
+                   OR code_text LIKE %s
+                   OR brand_code LIKE %s
+                   OR serial LIKE %s
+                ORDER BY created_at DESC
+                LIMIT 100
+                """, (
+                    f"%{q}%",
+                    f"%{compact_q}%",
+                    f"%{q}%",
+                    f"%{q}%",
+                    f"%{q}%"
+                ))
+            else:
+                cur.execute("""
+                SELECT
+                    item_id AS id,
+                    brand_name,
+                    brand_code,
+                    serial,
+                    client,
+                    division,
+                    wholesale,
+                    retail,
+                    created_at
+                FROM pos_search_cache
+                ORDER BY created_at DESC
+                LIMIT 100
+                """)
 
-        rows = cur.fetchall()
+            rows = cur.fetchall()
+
+        else:
+            if q:
+                cur.execute("""
+                SELECT *
+                FROM items
+                WHERE brand_name LIKE %s
+                   OR brand_code LIKE %s
+                   OR serial LIKE %s
+                   OR client LIKE %s
+                   OR division LIKE %s
+                ORDER BY id DESC
+                LIMIT 100
+                """, (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"))
+            else:
+                cur.execute("SELECT * FROM items ORDER BY id DESC LIMIT 100")
+
+            rows = cur.fetchall()
 
     conn.close()
 
@@ -390,7 +480,8 @@ def home():
         HTML,
         rows=rows,
         q=q,
-        bundle_template=bundle_template
+        bundle_template=bundle_template,
+        cache_count=cache_count
     )
 
 
